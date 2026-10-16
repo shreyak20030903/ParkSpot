@@ -1,6 +1,6 @@
 package com.Shreya.parkspot.Controller;
 
-import com.Shreya.parkspot.Entity.Building;
+import com.Shreya.parkspot.Dto.BuildingDto;
 import com.Shreya.parkspot.Service.BuildingService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,15 +18,15 @@ public class BuildingController {
     private BuildingService buildingService;
 
     @GetMapping("/nearby")
-    public List<Building> getNearby(
+    public List<BuildingDto> getNearby(
             @RequestParam double lat,
             @RequestParam double lng,
-            @RequestParam(defaultValue = "5") double radiusKm) {
+            @RequestParam(defaultValue = "4") double radiusKm) {
         return buildingService.getNearbyBuildings(lat, lng, radiusKm);
     }
 
     @GetMapping
-    public List<Building> getByCity(@RequestParam String city) {
+    public List<BuildingDto> getByCity(@RequestParam String city) {
         return buildingService.getBuildingsByCity(city);
     }
 }

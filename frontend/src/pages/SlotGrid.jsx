@@ -1,159 +1,314 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import API from '../api';
-import { useParams,useNavigate } from 'react-router-dom';
+import Header from '../components/Header.jsx';
+import Toast from '../components/Toast.jsx';
+import BasementMap from '../components/BasementMap.jsx';
+import PaymentModal from '../components/PaymentModal.jsx';
+import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import useActiveBooking from '../hooks/useActiveBooking.js';
+import useBuildingSocket from '../hooks/useBuildingSocket.js';
+import useToast from '../hooks/useToast.js';
+import {
+  FLOOR_LABEL,
+  PRICE,
+  errorText,
+  formatTime,
+  normalizeBooking,
+  slotNumber,
+} from '../utils/booking';
 
-
-function SlotGrid() {
+export default function SlotGrid() {
   const { buildingId } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const buildingName =
+    location.state?.name || sessionStorage.getItem(`building:${buildingId}`) || 'Parking';
+
   const [vehicleType, setVehicleType] = useState('car');
   const [slots, setSlots] = useState([]);
-  const [message, setMessage] = useState('');
-  const [myBooking, setMyBooking] = useState(null); // poora booking object store hoga
-  const [isBooking, setIsBooking] = useState(false);
-  const isBookingRef = useRef(false);
-  const navigate = useNavigate();
-  const floorLabel = vehicleType === 'car' ? 'Basement 1 (B1)' : 'Basement 2 (B2)';
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [slotToBook, setSlotToBook] = useState(null);
+  const [confirmUnbook, setConfirmUnbook] = useState(false);
+  const [unbooking, setUnbooking] = useState(false);
+  const busy = useRef(false);
 
-  const userId = localStorage.getItem('userId');
+  const { booking, setBooking, refresh: refreshBooking } = useActiveBooking();
+  const [toast, showToast] = useToast();
 
-  const fetchSlots = () => {
-    API.get(`/buildings/${buildingId}/slots?vehicleType=${vehicleType}`).then((res) =>
-      setSlots(res.data)
-    );
-  };
-
- const fetchMyActiveBooking = () => {
-  API.get(`/bookings/active?userId=${userId}`)
-    .then((res) => {
-      console.log('Active booking found:', res.data);
-      setMyBooking(res.data);
-    })
-    .catch((err) => {
-      console.log('No active booking:', err.response?.status, err.response?.data);
-      setMyBooking(null);
-    });
-};
-
-
-
-const handleLogout = () => {
-  if (myBooking) {
-    setMessage('Please unbook your slot before logging out');
-    return;
-  }
-  localStorage.removeItem('userId');
-  navigate('/');
-};
- 
-  useEffect(() => {
-    fetchSlots();
-    fetchMyActiveBooking();
+  const fetchSlots = useCallback(async () => {
+    try {
+      const res = await API.get(`/buildings/${buildingId}/slots`, { params: { vehicleType } });
+      setSlots(res.data);
+      setLoadError('');
+    } catch {
+      setLoadError('Could not load the bays. Check that the backend is running.');
+    } finally {
+      setLoading(false);
+    }
   }, [buildingId, vehicleType]);
 
-  const handleBookClick = async (slot) => {
-  if (isBookingRef.current || myBooking || slot.status !== 'free') return;
+  const refreshAll = useCallback(() => {
+    fetchSlots();
+    refreshBooking();
+  }, [fetchSlots, refreshBooking]);
 
-  const price = vehicleType === 'car' ? 40 : 30;
-  const confirmed = window.confirm(`Pay ₹${price} to book slot ${slot.slotCode}?`);
-  if (!confirmed) return;
+  useEffect(() => {
+    setLoading(true);
+    fetchSlots();
+  }, [fetchSlots]);
 
-  isBookingRef.current = true;
-  setIsBooking(true);
-  setMessage('Processing payment...');
+  // Live updates over WebSocket, with a slow poll as a fallback
+  const live = useBuildingSocket(buildingId, refreshAll);
+  const refreshRef = useRef(refreshAll);
+  refreshRef.current = refreshAll;
+  useEffect(() => {
+    if (live) return undefined;
+    const timer = setInterval(() => refreshRef.current(), 10000);
+    return () => clearInterval(timer);
+  }, [live]);
 
+  const freeCount = slots.filter((s) => s.status === 'free').length;
+
+  // "Park here": the free bay closest to the entry ramp (lowest bay number)
+  const suggested = useMemo(() => {
+    if (booking) return null;
+    const free = slots.filter((s) => s.status === 'free');
+    if (free.length === 0) return null;
+    return free.reduce((best, s) => (slotNumber(s.slotCode) < slotNumber(best.slotCode) ? s : best));
+  }, [slots, booking]);
+
+  const sameBuilding =
+    booking?.buildingId && String(booking.buildingId) === String(buildingId);
+  const mySlotId = booking?.slotId;
+
+  const onSelect = (slot) => {
+    if (booking && booking.slotId === slot.id) {
+      setConfirmUnbook(true);
+      return;
+    }
+    if (booking) {
+      showToast('You already have an active booking. Unbook it to book another bay.', 'error');
+      return;
+    }
+    if (slot.status === 'free') setSlotToBook(slot);
+  };
+
+  const bookSlot = async (durationMinutes) => {
+    if (busy.current || !slotToBook) return;
+    busy.current = true;
+    const slot = slotToBook;
     try {
-      const res = await API.post(
-        `/bookings?slotId=${slot.id}&userId=${userId}&vehicleTypeId=1&durationMinutes=120`
-      );
-      setMyBooking(res.data);
-      setMessage('Slot booked');
-      fetchSlots();
+      const res = await API.post('/bookings', null, {
+        params: { slotId: slot.id, durationMinutes },
+      });
+      setBooking(normalizeBooking(res.data));
+      showToast(`Bay ${slot.slotCode} is booked.`, 'success');
     } catch (err) {
-      try {
-        const activeRes = await API.get(`/bookings/active?userId=${userId}`);
-        setMyBooking(activeRes.data);
-        setMessage('Slot booked');
-      } catch {
-        setMyBooking(null);
-        const errData = err.response?.data;
-        setMessage(typeof errData === 'string' ? errData : 'Booking failed, slot may already be taken');
-      }
-      fetchSlots();
+      showToast(errorText(err, 'Booking failed. Try another bay.'), 'error');
     } finally {
-      isBookingRef.current = false;
-      setIsBooking(false);
+      busy.current = false;
+      setSlotToBook(null);
+      refreshAll();
     }
   };
 
-  const handleUnbookClick = async () => {
-    if (isBookingRef.current || !myBooking) return;
-
-    const confirmed = window.confirm('Are you sure you want to unbook this slot?');
-    if (!confirmed) return;
-
-    isBookingRef.current = true;
-    setIsBooking(true);
+  const unbook = async () => {
+    if (busy.current || !booking) return;
+    busy.current = true;
+    setUnbooking(true);
     try {
-      await API.patch(`/bookings/${myBooking.id}/end`);
-      setMyBooking(null);
-      setMessage('Slot is free now');
-      fetchSlots();
+      await API.patch(`/bookings/${booking.id}/end`);
+      setBooking(null);
+      showToast('Booking ended. The bay is free again.', 'success');
     } catch (err) {
-      setMessage('Could not unbook, try again');
+      showToast(errorText(err, 'Could not unbook. Try again.'), 'error');
     } finally {
-      isBookingRef.current = false;
-      setIsBooking(false);
+      busy.current = false;
+      setUnbooking(false);
+      setConfirmUnbook(false);
+      refreshAll();
     }
   };
 
-  const handleSlotClick = (slot) => {
-    const isMine = myBooking && myBooking.slot.id === slot.id;
-    if (isMine) {
-      handleUnbookClick();
-    } else {
-      handleBookClick(slot);
+  const goToBookedBuilding = () => {
+    if (booking.buildingName) {
+      sessionStorage.setItem(`building:${booking.buildingId}`, booking.buildingName);
     }
+    navigate(`/buildings/${booking.buildingId}/slots`, { state: { name: booking.buildingName } });
   };
+
+  let bannerTitle = 'Your active parking';
+  if (sameBuilding) bannerTitle = 'Active parking in this building';
+  else if (booking?.buildingName) bannerTitle = `Active parking at ${booking.buildingName}`;
+
+  const freePercent = slots.length ? Math.round((freeCount / slots.length) * 100) : 0;
+  const hasSlots = !loading && !loadError && slots.length > 0;
 
   return (
-    <div className="slot-grid-page">
-      
-      <div className="top-bar">
-          <div className="vehicle-toggle">
-              <button onClick={() => setVehicleType('bike')} className={vehicleType === 'bike' ? 'active' : ''}>Bike</button>
-               <button onClick={() => setVehicleType('car')} className={vehicleType === 'car' ? 'active' : ''}>Car</button>
-               <p className="current-floor-label">{floorLabel}</p>
-          </div>
-          <button onClick={handleLogout} className="logout-btn">Logout</button>
-          
-      </div>
-      
+    <div className="page">
+      <Header hasActiveBooking={!!booking} onBlocked={(m) => showToast(m, 'error')}>
+        <span className={live ? 'live-badge live' : 'live-badge'} role="status">
+          <span className="live-dot" aria-hidden="true" />
+          <span className="live-text">{live ? 'Live' : 'Reconnecting'}</span>
+        </span>
+      </Header>
+      <Toast toast={toast} />
 
-      {myBooking && (
-        <div className="my-booking-banner">
-          <p>Active booking: {myBooking.slot.slotCode}</p>
-          <button onClick={handleUnbookClick}>Unbook</button>
+      <main className="content">
+        <button type="button" className="link-back" onClick={() => navigate('/buildings')}>
+          Back to all buildings
+        </button>
+
+        <div className="slot-head">
+          <div>
+            <h1>{buildingName}</h1>
+            <p className="muted">
+              {FLOOR_LABEL[vehicleType]} for {vehicleType === 'car' ? 'cars' : 'bikes'}
+            </p>
+          </div>
+          <div className="segmented" role="group" aria-label="Vehicle type">
+            <button
+              type="button"
+              aria-pressed={vehicleType === 'car'}
+              className={vehicleType === 'car' ? 'seg active' : 'seg'}
+              onClick={() => setVehicleType('car')}
+            >
+              Car
+            </button>
+            <button
+              type="button"
+              aria-pressed={vehicleType === 'bike'}
+              className={vehicleType === 'bike' ? 'seg active' : 'seg'}
+              onClick={() => setVehicleType('bike')}
+            >
+              Bike
+            </button>
+          </div>
         </div>
+
+        <div className="info-strip">
+          <section className="info-card availability">
+            <h2 className="card-title">Availability</h2>
+            {hasSlots ? (
+              <>
+                <p className="avail-line"><strong>{freeCount}</strong> of {slots.length} bays free</p>
+                <span className="meter" aria-hidden="true">
+                  <span className="meter-fill" style={{ width: `${freePercent}%` }} />
+                </span>
+              </>
+            ) : (
+              <p className="muted">{loading ? 'Loading bays' : 'No bays to show'}</p>
+            )}
+          </section>
+
+          {booking && (
+            <section className="info-card booking-banner" aria-live="polite">
+              <div>
+                <h2>{bannerTitle}</h2>
+                <p>
+                  Bay {booking.slotCode}
+                  {booking.floorLabel ? `, ${booking.floorLabel}` : ''}
+                  {booking.endTime ? `. Booked until ${formatTime(booking.endTime)}.` : '.'}
+                </p>
+              </div>
+              <div className="banner-actions">
+                {booking.buildingId && !sameBuilding && (
+                  <button type="button" className="btn btn-ghost" onClick={goToBookedBuilding}>
+                    Open that building
+                  </button>
+                )}
+                <button type="button" className="btn btn-danger" onClick={() => setConfirmUnbook(true)}>
+                  Unbook
+                </button>
+              </div>
+            </section>
+          )}
+
+          {!booking && suggested && (
+            <section className="info-card suggestion" aria-live="polite">
+              <div>
+                <h2>Park here: bay {suggested.slotCode}</h2>
+                <p>The free bay closest to the entry ramp. This updates as other cars take bays.</p>
+              </div>
+              <div className="banner-actions">
+                <button type="button" className="btn btn-accent" onClick={() => setSlotToBook(suggested)}>
+                  Book bay {suggested.slotCode}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {!booking && hasSlots && !suggested && (
+            <section className="info-card suggestion suggestion-full" aria-live="polite">
+              <div>
+                <h2>This basement is full right now</h2>
+                <p>The page updates by itself when a bay frees up.</p>
+              </div>
+            </section>
+          )}
+
+          <section className="info-card legend-card">
+            <h2 className="card-title">Bay colours</h2>
+            <ul className="legend" aria-label="Bay colours">
+              <li><span className="swatch swatch-free" />Free</li>
+              <li><span className="swatch swatch-booked" />Taken, with the time it frees up</li>
+              <li><span className="swatch swatch-mine" />Your bay</li>
+              <li><span className="swatch swatch-suggested" />Suggested</li>
+            </ul>
+          </section>
+        </div>
+
+        <section className="map-col">
+          {loading && <p className="state-msg" role="status">Loading bays</p>}
+          {loadError && (
+            <div className="state-box">
+              <h2>{loadError}</h2>
+              <button type="button" className="btn btn-ghost" onClick={fetchSlots}>Try again</button>
+            </div>
+          )}
+          {!loading && !loadError && slots.length === 0 && (
+            <div className="state-box">
+              <h2>No {vehicleType} bays in this building</h2>
+            </div>
+          )}
+          {hasSlots && (
+            <BasementMap
+              slots={slots}
+              vehicleType={vehicleType}
+              mySlotId={mySlotId}
+              suggestedId={suggested?.id}
+              onSelect={onSelect}
+            />
+          )}
+        </section>
+      </main>
+
+      {slotToBook && (
+        <PaymentModal
+          slot={slotToBook}
+          vehicleType={vehicleType}
+          floorLabel={FLOOR_LABEL[vehicleType]}
+          buildingName={buildingName}
+          price={PRICE[vehicleType]}
+          onClose={() => setSlotToBook(null)}
+          onPaid={bookSlot}
+        />
       )}
 
-      {message && <p className="message">{message}</p>}
-
-      <div className="slot-grid">
-        {slots.map((slot) => {
-          const isMine = myBooking && myBooking.slot.id === slot.id;
-          return (
-            <div
-              key={slot.id}
-              className={`slot-box ${isMine ? 'mine' : slot.status}`}
-              onClick={() => handleSlotClick(slot)}
-            >
-              {slot.slotCode}
-            </div>
-          );
-        })}
-      </div>
+      {confirmUnbook && (
+        <ConfirmDialog
+          title="Unbook this bay?"
+          body={`Bay ${booking?.slotCode ?? ''} will be free for other drivers straight away.`}
+          confirmLabel="Yes, unbook"
+          cancelLabel="Keep it"
+          danger
+          busy={unbooking}
+          onConfirm={unbook}
+          onCancel={() => setConfirmUnbook(false)}
+        />
+      )}
     </div>
   );
 }
-
-export default SlotGrid;

@@ -1,11 +1,14 @@
 package com.Shreya.parkspot.Service;
 
+import com.Shreya.parkspot.Dto.BuildingDto;
 import com.Shreya.parkspot.Entity.Building;
 import com.Shreya.parkspot.Repository.BuildingRepository;
+import com.Shreya.parkspot.Repository.SlotRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 @Service
@@ -13,31 +16,31 @@ public class BuildingService {
 
     @Autowired
     private BuildingRepository buildingRepo;
+    @Autowired
+    private SlotRepository slotRepo;
 
-    public List<Building> getNearbyBuildings(double lat, double lng, double radiusKm) {
-        List<Building> all = buildingRepo.findAll();
-        List<Building> nearby = new ArrayList<>();
-
-        for (Building b : all) {
-            double distance = haversine(lat, lng, b.getLatitude(), b.getLongitude());
-            if (distance <= radiusKm) {
-                nearby.add(b);
+    public List<BuildingDto> getNearbyBuildings(double lat, double lng, double radiusKm) {
+        List<BuildingDto> result = new ArrayList<>();
+        for (Building b : buildingRepo.findAll()) {
+            double d = haversine(lat, lng, b.getLatitude(), b.getLongitude());
+            if (d <= radiusKm) {
+                result.add(toDto(b, Math.round(d * 10.0) / 10.0));
             }
         }
-
-        nearby.sort((a, b) -> {
-            double distA = haversine(lat, lng, a.getLatitude(), a.getLongitude());
-            double distB = haversine(lat, lng, b.getLatitude(), b.getLongitude());
-            return Double.compare(distA, distB);
-        });
-
-        return nearby;
+        result.sort(Comparator.comparingDouble(BuildingDto::distanceKm));
+        return result;
     }
 
-    public List<Building> getBuildingsByCity(String city) {
-        return buildingRepo.findByCity(city);
+    public List<BuildingDto> getBuildingsByCity(String city) {
+        return buildingRepo.findByCity(city).stream().map(b -> toDto(b, null)).toList();
     }
 
+    private BuildingDto toDto(Building b, Double distanceKm) {
+        long free = slotRepo.countByFloor_Building_IdAndStatus(b.getId(), "free");
+        long total = slotRepo.countByFloor_Building_Id(b.getId());
+        return new BuildingDto(b.getId(), b.getName(), b.getCity(), b.getLatitude(), b.getLongitude(),
+                distanceKm, free, total);
+    }
     private double haversine(double lat1, double lng1, double lat2, double lng2) {
         double R = 6371; // Earth radius in km
         double dLat = Math.toRadians(lat2 - lat1);

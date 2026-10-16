@@ -6,11 +6,14 @@ import com.Shreya.parkspot.Entity.User;
 import com.Shreya.parkspot.Entity.VehicleType;
 import com.Shreya.parkspot.Repository.BookingRepository;
 import com.Shreya.parkspot.Repository.SlotRepository;
+import com.Shreya.parkspot.Repository.UserRepository;
 import com.Shreya.parkspot.Repository.VehicleTypeRepository;
+import com.Shreya.parkspot.config.SlotBroadcaster;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -20,62 +23,65 @@ import java.util.UUID;
 @Service
 public class BookingService {
 
-    @Autowired
-    private SlotRepository slotRepo;
+    @Autowired private SlotRepository slotRepo;
+    @Autowired private BookingRepository bookingRepo;
+    @Autowired private VehicleTypeRepository vehicleTypeRepo;
+    @Autowired private UserRepository userRepo;
+    @Autowired private StringRedisTemplate redisTemplate;
+    @Autowired private SlotBroadcaster broadcaster;
+    @Autowired private TransactionTemplate txTemplate;
 
-    @Autowired
-    private BookingRepository bookingRepo;
+    public Booking bookSlot(UUID slotId, UUID userId, int durationMinutes) {
+        if (durationMinutes < 30 || durationMinutes > 480) {
+            throw new RuntimeException("Parking time must be between 30 minutes and 8 hours");
+        }
 
-    @Autowired
-    private VehicleTypeRepository vehicleTypeRepo;
-
-    @Autowired
-    private StringRedisTemplate redisTemplate;
-
-    @Transactional
-    public Booking bookSlot(UUID slotId, UUID userId, Long vehicleTypeId, int durationMinutes) {
         String lockKey = "lock:slot:" + slotId;
-        Boolean lockAcquired = redisTemplate.opsForValue()
-                .setIfAbsent(lockKey, "locked", Duration.ofSeconds(5));
-
-        if (Boolean.FALSE.equals(lockAcquired)) {
-            throw new RuntimeException("Slot is currently being booked by someone else, try again");
+        Boolean locked = redisTemplate.opsForValue().setIfAbsent(lockKey, "locked", Duration.ofSeconds(5));
+        if (Boolean.FALSE.equals(locked)) {
+            throw new RuntimeException("Someone else is booking this bay right now. Try again.");
         }
 
         try {
-            // NAYA CHECK — user ka pehle se koi active booking toh nahi hai
-            List<Booking> existingActive = bookingRepo.findByUser_IdAndStatus(userId, "active");
-            if (!existingActive.isEmpty()) {
-                throw new RuntimeException("You already have an active booking. End it before booking another slot.");
-            }
-
-            Slot slot = slotRepo.findById(slotId).orElseThrow();
-            if (!slot.getStatus().equals("free")) {
-                throw new RuntimeException("Slot already booked");
-            }
-
-            VehicleType vehicleType = vehicleTypeRepo.findById(vehicleTypeId).orElseThrow();
-
-            slot.setStatus("booked");
-            slotRepo.save(slot);
-
-            Booking booking = new Booking();
-            booking.setSlot(slot);
-            User user = new User();
-            user.setId(userId);
-            booking.setUser(user);
-            booking.setVehicleType(vehicleType);
-            booking.setStartTime(LocalDateTime.now());
-            booking.setEndTime(LocalDateTime.now().plusMinutes(durationMinutes));
-            booking.setPrice(vehicleType.getPrice());
-            booking.setStatus("active");
-
-            return bookingRepo.save(booking);
-
+            // The transaction commits here, inside the lock
+            return txTemplate.execute(status -> createBooking(slotId, userId, durationMinutes));
         } finally {
             redisTemplate.delete(lockKey);
         }
     }
+
+    private Booking createBooking(UUID slotId, UUID userId, int durationMinutes) {
+        if (!bookingRepo.findByUser_IdAndStatus(userId, "active").isEmpty()) {
+            throw new RuntimeException("You already have an active booking. End it before booking another bay.");
+        }
+
+        Slot slot = slotRepo.findById(slotId).orElseThrow(() -> new RuntimeException("Bay not found"));
+        if (!"free".equals(slot.getStatus())) {
+            throw new RuntimeException("Bay already booked");
+        }
+
+        // Price comes from the bay's own vehicle type, never from the client
+        VehicleType vehicleType = vehicleTypeRepo.findByName(slot.getVehicleType())
+                .orElseThrow(() -> new RuntimeException("Vehicle type is not configured"));
+        User user = userRepo.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
+
+        slot.setStatus("booked");
+        slotRepo.save(slot);
+
+        Booking booking = new Booking();
+        booking.setUser(user);
+        booking.setSlot(slot);
+        booking.setVehicleType(vehicleType);
+        booking.setStartTime(LocalDateTime.now());
+        booking.setEndTime(LocalDateTime.now().plusMinutes(durationMinutes));
+        booking.setPrice(vehicleType.getPrice());
+        booking.setStatus("active");
+        Booking saved = bookingRepo.save(booking);
+
+        broadcaster.buildingChanged(slot.getFloor().getBuilding().getId());
+        return saved;
+    }
+
     public Booking getActiveBooking(UUID userId) {
         List<Booking> active = bookingRepo.findByUser_IdAndStatus(userId, "active");
         if (active.isEmpty()) {
@@ -84,18 +90,39 @@ public class BookingService {
         return active.get(0);
     }
 
-    public Booking endBooking(UUID bookingId) {
-        Booking booking = bookingRepo.findById(bookingId).orElseThrow();
+    @Transactional
+    public Booking endBooking(UUID bookingId, UUID userId) {
+        Booking booking = bookingRepo.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+        if (!booking.getUser().getId().equals(userId)) {
+            throw new RuntimeException("Not your booking");
+        }
+        if (!"active".equals(booking.getStatus())) {
+            throw new RuntimeException("Booking already ended");
+        }
+        finish(booking, true);
+        return booking;
+    }
+
+    @Transactional
+    public void expireOverdueBookings() {
+        List<Booking> overdue = bookingRepo.findByStatusAndEndTimeBefore("active", LocalDateTime.now());
+        for (Booking booking : overdue) {
+            finish(booking, false);
+        }
+    }
+
+    private void finish(Booking booking, boolean endedEarly) {
         booking.setStatus("completed");
-        booking.setEndTime(LocalDateTime.now());
+        if (endedEarly) {
+            booking.setEndTime(LocalDateTime.now());
+        }
         bookingRepo.save(booking);
 
         Slot slot = booking.getSlot();
         slot.setStatus("free");
         slotRepo.save(slot);
 
-        return booking;
+        broadcaster.buildingChanged(slot.getFloor().getBuilding().getId());
     }
-
-
 }

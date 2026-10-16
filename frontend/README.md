@@ -1,105 +1,58 @@
-# ParkSpot — Smart Parking Slot Finder & Booking System
+# ParkSpot frontend
 
-ParkSpot helps drivers find and reserve a parking slot in nearby malls and office buildings before they arrive, so they don't spend time circling a full basement. Slots are shown as a live grid, and two people can never book the same slot at the same time (Redis-based locking).
+React + Vite frontend for ParkSpot, a parking slot finder and booking app for malls and office buildings.
 
-> **Status:** work in progress. The core booking flow is complete and working. See [Planned](#planned) for what is still to come.
-
-
-## Features (implemented)
-
-- **Register / Login** with BCrypt-hashed passwords (Spring Security)
-- **Live location search:** uses the browser's GPS to list buildings within 4 km, sorted nearest to farthest (Haversine distance calculation on the backend)
-- **Manual search** by city
-- **Slot grid per building**, filtered by vehicle type
-  - Basement 1 (B1): cars only, 40 slots
-  - Basement 2 (B2): bikes only, 35 slots
-- **Booking with fixed pricing** by vehicle type (bike ₹30, car ₹40)
-- **Concurrency-safe booking:** a Redis lock stops two users from booking the same slot at once
-- **One active booking per user**
-- **Book / unbook from the grid:** green = free, purple = your slot, red = booked by someone else; unbooking asks for confirmation
-- **Active booking banner** showing which slot you parked in
-- **Logout is blocked while a booking is active** (unbook first)
-- **Seed data:** 3 sample buildings in Indore, each with both basements, created automatically on first run
-
-## How double-booking is prevented
-
-When a user books a slot, the backend does the following inside a single transaction:
-
-1. Tries to acquire a Redis lock for that slot (`SET key value NX` with a 5-second expiry, via `setIfAbsent`)
-2. If the lock is already held, the request is rejected immediately ("being booked by someone else")
-3. Otherwise it checks the slot is still free, checks the user has no other active booking, creates the booking and marks the slot booked
-4. The lock is always released in a `finally` block, and the expiry makes sure a crashed request can't leave a slot locked forever
-
-If anything fails midway, `@Transactional` rolls the whole operation back, so a slot is never left "booked" without a matching booking.
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | React, React Router, Axios |
-| Backend | Java, Spring Boot, Spring Data JPA (Hibernate), Spring Security, Lombok |
-| Database | MySQL |
-| Locking | Redis (Spring Data Redis) |
-
-## Data model
-
-`Building → Floor → Slot`, plus `User`, `VehicleType` (with price) and `Booking` (user, slot, vehicle type, start/end time, price, status).
-
-## API endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/auth/register` | Create an account |
-| POST | `/auth/login` | Log in |
-| GET | `/buildings?city=` | Buildings in a city |
-| GET | `/buildings/nearby?lat=&lng=&radiusKm=` | Buildings within a radius, nearest first |
-| GET | `/buildings/{id}/slots?vehicleType=` | Slots of a building for a vehicle type |
-| POST | `/bookings` | Book a slot (Redis lock + transaction) |
-| GET | `/bookings/active?userId=` | The user's current booking |
-| PATCH | `/bookings/{id}/end` | End a booking and free the slot |
-
-## Run locally
-
-**Prerequisites:** JDK 17+, Node.js, MySQL, Redis (on Windows, [Memurai](https://www.memurai.com/) works as a Redis-compatible server).
-
-**Backend**
-
-1. Make sure MySQL and Redis are running.
-2. Set your database password as an environment variable (`DB_PASSWORD`). `application.properties` reads it:
-   ```properties
-   spring.datasource.url=jdbc:mysql://localhost:3306/parkspot?createDatabaseIfNotExist=true
-   spring.datasource.username=root
-   spring.datasource.password=${DB_PASSWORD}
-   spring.data.redis.host=localhost
-   spring.data.redis.port=6379
-   ```
-3. Run `ParkSpotApplication`. The backend starts on `http://localhost:8080`, creates the tables and seeds sample data on first run.
-
-**Frontend**
+## Run it
 
 ```bash
-cd parkspot-frontend
 npm install
-npm start
+npm run dev
 ```
 
-The app opens on `http://localhost:3000`. The backend URL is set in `src/api.js`.
+Open http://localhost:5173. The backend must be running on http://localhost:8080. If it runs somewhere else, copy `.env.example` to `.env` and set `VITE_API_URL`.
 
-## Known limitations
+Vite uses port 5173, so the backend's CORS config must allow `http://localhost:5173`.
 
-- Login currently stores the user id on the client and endpoints take `userId` as a parameter; proper token-based auth (JWT) is not implemented yet
-- Booking duration is fixed at 2 hours and there is no payment step yet (the price is only shown in a confirmation prompt)
-- Expired bookings are not freed automatically; a user has to unbook
+## Screens
 
-## Planned
+- **Login and register:** illustrated landing panel, JWT login, errors from the backend are shown as they are.
+- **Buildings:** asks for your location and lists buildings within 4 km, nearest first, with distance and free bays. Search by city, or go back to "Near me". If you have an active booking, a card at the top shows where you parked.
+- **Bays:** a top-down basement map with rows of bays, a driveway and pillars. Basement 1 is cars (larger bays), Basement 2 is bikes (smaller bays).
+  - Green is free, red is taken (with the time it frees up), purple is your bay, yellow is the suggested bay.
+  - Click a free bay to pay and book it. Click your purple bay to unbook it (with a confirmation).
+  - A banner says "Active parking in this building" when your booking is in the building you are viewing.
+  - Logging out is blocked while you hold an active booking.
 
-- JWT authentication and protected routes
-- Scheduled job to auto-complete expired bookings
-- Choose booking duration / exact end time, and show when an occupied slot becomes free
-- Real-time slot updates with WebSocket
-- Payment integration
-- Better floor layout UI
+## How it behaves
 
-## Author
+- **Park here:** the free bay with the lowest bay number is suggested, on the assumption that bay numbers grow with distance from the entry ramp. It re-computes live as bays fill up. It is a simple rule, not a routing algorithm.
+- **Live updates:** the page subscribes to `/topic/building/{id}` over WebSocket (STOMP over SockJS). Any message means "refetch the bays". While the socket is down it polls every 10 seconds and the header shows "Reconnecting".
+- **Payment:** a demo checkout (UPI or card form). Nothing is sent anywhere and no money moves. The booking request is only sent after the demo payment succeeds. A real gateway would need an order created and verified on the backend.
+- **Duration:** the driver picks 1 to 4 hours; the fee is a flat price per vehicle type, as in the backend.
 
-**Shreya Kushwaha** — [GitHub](https://github.com/shreyak20030903) · [LinkedIn](https://www.linkedin.com/in/shreya-kushwaha-45138928a/)
+## Backend contract
+
+| Endpoint | Used for |
+|---|---|
+| `POST /auth/login`, `POST /auth/register` | Login returns `{ token, name, email }` |
+| `GET /buildings/nearby?lat&lng&radiusKm` | Items: `id, name, city, distanceKm, freeSlots, totalSlots` |
+| `GET /buildings?city=` | Same items without `distanceKm` |
+| `GET /buildings/{id}/slots?vehicleType=` | Items: `id, slotCode, vehicleType, status, occupiedUntil` |
+| `POST /bookings?slotId&durationMinutes` | Returns a booking with `slotId, slotCode, floorLabel, buildingId, buildingName, endTime` |
+| `GET /bookings/active` | Same booking shape, 400 when there is none |
+| `PATCH /bookings/{id}/end` | Ends the booking |
+| WebSocket `/ws`, topic `/topic/building/{id}` | "changed" signal |
+
+The extra fields (`distanceKm`, `freeSlots`, `occupiedUntil`, `buildingName`, and so on) are optional: the UI simply hides what the backend does not send.
+
+## Structure
+
+```
+src/
+  api.js                 axios client with JWT and 401 handling
+  pages/                 Login, BuildingList, SlotGrid
+  components/            BasementMap, PaymentModal, ConfirmDialog, Header, Toast
+  hooks/                 useActiveBooking, useBuildingSocket, useToast
+  utils/booking.js       prices, floor labels, formatting
+  assets/basement-city.svg
+```

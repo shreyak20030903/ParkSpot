@@ -1,13 +1,14 @@
 package com.Shreya.parkspot.Controller;
 
+import com.Shreya.parkspot.Dto.BookingDto;
 import com.Shreya.parkspot.Entity.Booking;
 import com.Shreya.parkspot.Service.BookingService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
-
 @RestController
 @RequestMapping("/bookings")
 public class BookingController {
@@ -16,32 +17,31 @@ public class BookingController {
     private BookingService bookingService;
 
     @PostMapping
-    public ResponseEntity<?> book(
-            @RequestParam UUID slotId,
-            @RequestParam UUID userId,
-            @RequestParam Long vehicleTypeId,
-            @RequestParam(defaultValue = "120") int durationMinutes) {
+    public ResponseEntity<?> book(@AuthenticationPrincipal UUID userId,
+                                  @RequestParam UUID slotId,
+                                  @RequestParam(defaultValue = "120") int durationMinutes) {
         try {
-            Booking booking = bookingService.bookSlot(slotId, userId, vehicleTypeId, durationMinutes);
-            return ResponseEntity.ok(booking);
+            return ResponseEntity.ok(BookingDto.from(bookingService.bookSlot(slotId, userId, durationMinutes)));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
 
     @GetMapping("/active")
-    public ResponseEntity<?> getActive(@RequestParam UUID userId) {
+    public ResponseEntity<?> getActive(@AuthenticationPrincipal UUID userId) {
         try {
-            Booking booking = bookingService.getActiveBooking(userId);
-            return ResponseEntity.ok(booking);
+            return ResponseEntity.ok(BookingDto.from(bookingService.getActiveBooking(userId)));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }
 
     @PatchMapping("/{bookingId}/end")
-    public ResponseEntity<?> end(@PathVariable UUID bookingId) {
-        Booking booking = bookingService.endBooking(bookingId);
-        return ResponseEntity.ok(booking);
+    public ResponseEntity<?> end(@AuthenticationPrincipal UUID userId, @PathVariable UUID bookingId) {
+        try {
+            return ResponseEntity.ok(BookingDto.from(bookingService.endBooking(bookingId, userId)));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 }
