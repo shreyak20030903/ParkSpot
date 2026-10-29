@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import API from '../api';
+import { formatRupees } from '../utils/booking';
 
-const DURATIONS = [
+// Used only if the pricing endpoint is not available
+const FALLBACK_OPTIONS = [
   { label: '1 hour', minutes: 60 },
   { label: '2 hours', minutes: 120 },
   { label: '3 hours', minutes: 180 },
@@ -11,20 +14,40 @@ const DURATIONS = [
 // The booking request is only sent after this "payment" succeeds.
 export default function PaymentModal({
   slot,
+  buildingId,
   vehicleType,
   floorLabel,
   buildingName,
-  price,
+  fallbackPrice,
   onClose,
   onPaid,
 }) {
+  const [options, setOptions] = useState(null); // null while loading
+  const [minutes, setMinutes] = useState(null);
   const [method, setMethod] = useState('upi');
-  const [minutes, setMinutes] = useState(120);
   const [upi, setUpi] = useState('');
   const [card, setCard] = useState({ number: '', expiry: '' });
   const [step, setStep] = useState('form'); // form | processing | success
   const [error, setError] = useState('');
   const timers = useRef([]);
+
+  // Prices come from the server, so the screen always shows what will be charged
+  useEffect(() => {
+    let alive = true;
+    API.get(`/buildings/${buildingId}/pricing`, { params: { vehicleType } })
+      .then((res) => {
+        if (!alive) return;
+        setOptions(res.data);
+        const pick = res.data.find((o) => o.minutes >= 120) || res.data[0];
+        setMinutes(pick ? pick.minutes : null);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setOptions(FALLBACK_OPTIONS.map((o) => ({ ...o, price: fallbackPrice })));
+        setMinutes(120);
+      });
+    return () => { alive = false; };
+  }, [buildingId, vehicleType, fallbackPrice]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -35,6 +58,10 @@ export default function PaymentModal({
   }, [step, onClose]);
 
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
+
+  const selected = options?.find((o) => o.minutes === minutes);
+  const price = selected?.price;
+  const days = selected ? selected.minutes / 1440 : 0;
 
   const validate = () => {
     if (method === 'upi') {
@@ -47,6 +74,7 @@ export default function PaymentModal({
 
   const pay = (e) => {
     e.preventDefault();
+    if (!selected) return;
     const problem = validate();
     if (problem) {
       setError(problem);
@@ -79,24 +107,36 @@ export default function PaymentModal({
 
             <dl className="summary">
               <div><dt>Building</dt><dd>{buildingName}</dd></div>
-              <div><dt>Floor</dt><dd>{floorLabel}</dd></div>
+              <div><dt>Parking</dt><dd>{floorLabel}</dd></div>
               <div><dt>Vehicle</dt><dd>{vehicleType === 'car' ? 'Car' : 'Bike'}</dd></div>
               <div>
                 <dt><label htmlFor="duration">Parking for</label></dt>
                 <dd>
-                  <select
-                    id="duration"
-                    value={minutes}
-                    onChange={(e) => setMinutes(Number(e.target.value))}
-                  >
-                    {DURATIONS.map((d) => (
-                      <option key={d.minutes} value={d.minutes}>{d.label}</option>
-                    ))}
-                  </select>
+                  {options ? (
+                    <select
+                      id="duration"
+                      value={minutes ?? ''}
+                      onChange={(e) => setMinutes(Number(e.target.value))}
+                    >
+                      {options.map((o) => (
+                        <option key={o.minutes} value={o.minutes}>
+                          {o.label}, {formatRupees(o.price)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="muted">Loading prices</span>
+                  )}
                 </dd>
               </div>
-              <div className="summary-total"><dt>Amount</dt><dd>₹{price}</dd></div>
+              <div className="summary-total">
+                <dt>Amount</dt>
+                <dd>{price != null ? formatRupees(price) : '...'}</dd>
+              </div>
             </dl>
+            {days >= 2 && (
+              <p className="per-day">That works out to about {formatRupees(Math.round(price / days))} a day.</p>
+            )}
 
             <div className="tabs" role="tablist" aria-label="Payment method">
               <button
@@ -160,7 +200,9 @@ export default function PaymentModal({
 
             <div className="modal-actions">
               <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
-              <button type="submit" className="btn btn-accent">Pay ₹{price}</button>
+              <button type="submit" className="btn btn-accent" disabled={!selected}>
+                {price != null ? `Pay ${formatRupees(price)}` : 'Pay'}
+              </button>
             </div>
           </form>
         )}

@@ -17,6 +17,8 @@ public class Building {
 
     private String name;
     private String city;
+    private String type;
+    private String imageUrl;
     private Double latitude;
     private Double longitude;
 

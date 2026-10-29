@@ -8,5 +8,6 @@ import java.util.UUID;
 
 public interface BuildingRepository extends JpaRepository<Building, UUID> {
     List<Building> findByCity(String city);
+    boolean existsByName(String name);
 }
 

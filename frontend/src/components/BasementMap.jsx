@@ -70,10 +70,10 @@ function Bay({ slot, state, vehicleType, onSelect }) {
   );
 }
 
-function Row({ slots, vehicleType, stateOf, onSelect }) {
+function Row({ slots, vehicleType, stateOf, onSelect, layout }) {
   const cells = [];
   for (let i = 0; i < PER_ROW; i += 1) {
-    if (i === HALF) cells.push(<span key="pillar" className="pillar" aria-hidden="true" />);
+    if (i === HALF) cells.push(<span key="divider" className={layout === 'open' ? 'lamp' : 'pillar'} aria-hidden="true" />);
     const slot = slots[i];
     cells.push(
       slot ? (
@@ -93,7 +93,7 @@ function Row({ slots, vehicleType, stateOf, onSelect }) {
 }
 
 // Top-down view of one basement: rows of bays facing a driveway, with pillars.
-export default function BasementMap({ slots, vehicleType, mySlotId, suggestedId, onSelect }) {
+export default function BasementMap({ slots, vehicleType, mySlotId, suggestedId, onSelect, layout = 'basement' }) {
   const sorted = [...slots].sort((a, b) => slotNumber(a.slotCode) - slotNumber(b.slotCode));
   const aisles = chunk(chunk(sorted, PER_ROW), 2);
 
@@ -108,16 +108,18 @@ export default function BasementMap({ slots, vehicleType, mySlotId, suggestedId,
     <div className="basement">
       <div className="entry-strip">
         <span className="entry-flag" aria-hidden="true">▼</span>
-        <span>Entry and exit ramp. Bay numbers grow as you drive further in.</span>
+        <span>
+          {layout === 'open' ? 'Entry gate' : 'Entry and exit ramp'}. Bay numbers grow as you drive further in.
+        </span>
       </div>
       <div className="basement-scroll">
-        <div className="floor">
+        <div className={layout === 'open' ? 'floor open' : 'floor'}>
           {aisles.map((pair, i) => (
             <div className="aisle" key={i}>
-              <Row slots={pair[0]} vehicleType={vehicleType} stateOf={stateOf} onSelect={onSelect} />
+              <Row slots={pair[0]} vehicleType={vehicleType} stateOf={stateOf} onSelect={onSelect} layout={layout} />
               <div className="lane" aria-hidden="true"><span>Driveway</span></div>
               {pair[1] ? (
-                <Row slots={pair[1]} vehicleType={vehicleType} stateOf={stateOf} onSelect={onSelect} />
+                <Row slots={pair[1]} vehicleType={vehicleType} stateOf={stateOf} onSelect={onSelect} layout={layout} />
               ) : (
                 <div className="bay-row bay-row-blank" aria-hidden="true" />
               )}

@@ -1,6 +1,7 @@
 package com.Shreya.parkspot.Service;
 
 import com.Shreya.parkspot.Entity.Booking;
+import com.Shreya.parkspot.Entity.Building;
 import com.Shreya.parkspot.Entity.Slot;
 import com.Shreya.parkspot.Entity.User;
 import com.Shreya.parkspot.Entity.VehicleType;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -30,12 +32,9 @@ public class BookingService {
     @Autowired private StringRedisTemplate redisTemplate;
     @Autowired private SlotBroadcaster broadcaster;
     @Autowired private TransactionTemplate txTemplate;
+    @Autowired private PricingService pricing;
 
     public Booking bookSlot(UUID slotId, UUID userId, int durationMinutes) {
-        if (durationMinutes < 30 || durationMinutes > 480) {
-            throw new RuntimeException("Parking time must be between 30 minutes and 8 hours");
-        }
-
         String lockKey = "lock:slot:" + slotId;
         Boolean locked = redisTemplate.opsForValue().setIfAbsent(lockKey, "locked", Duration.ofSeconds(5));
         if (Boolean.FALSE.equals(locked)) {
@@ -60,7 +59,11 @@ public class BookingService {
             throw new RuntimeException("Bay already booked");
         }
 
-        // Price comes from the bay's own vehicle type, never from the client
+        // The price comes from the building's type, the bay's vehicle type and the time
+        // asked for. It is never taken from the client, and the time must be an allowed option.
+        Building building = slot.getFloor().getBuilding();
+        BigDecimal price = pricing.priceFor(building, slot.getVehicleType(), durationMinutes);
+
         VehicleType vehicleType = vehicleTypeRepo.findByName(slot.getVehicleType())
                 .orElseThrow(() -> new RuntimeException("Vehicle type is not configured"));
         User user = userRepo.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
@@ -74,11 +77,11 @@ public class BookingService {
         booking.setVehicleType(vehicleType);
         booking.setStartTime(LocalDateTime.now());
         booking.setEndTime(LocalDateTime.now().plusMinutes(durationMinutes));
-        booking.setPrice(vehicleType.getPrice());
+        booking.setPrice(price);
         booking.setStatus("active");
         Booking saved = bookingRepo.save(booking);
 
-        broadcaster.buildingChanged(slot.getFloor().getBuilding().getId());
+        broadcaster.buildingChanged(building.getId());
         return saved;
     }
 

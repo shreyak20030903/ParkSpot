@@ -3,9 +3,11 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import API from '../api';
 import Header from '../components/Header.jsx';
 import Toast from '../components/Toast.jsx';
+import BackButton from '../components/BackButton.jsx';
 import BasementMap from '../components/BasementMap.jsx';
 import PaymentModal from '../components/PaymentModal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import { BuildingPhoto } from '../components/BuildingArt.jsx';
 import useActiveBooking from '../hooks/useActiveBooking.js';
 import useBuildingSocket from '../hooks/useBuildingSocket.js';
 import useToast from '../hooks/useToast.js';
@@ -14,6 +16,7 @@ import {
   PRICE,
   errorText,
   formatTime,
+  metaOf,
   normalizeBooking,
   slotNumber,
 } from '../utils/booking';
@@ -22,9 +25,8 @@ export default function SlotGrid() {
   const { buildingId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const buildingName =
-    location.state?.name || sessionStorage.getItem(`building:${buildingId}`) || 'Parking';
 
+  const [building, setBuilding] = useState(null);
   const [vehicleType, setVehicleType] = useState('car');
   const [slots, setSlots] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -36,6 +38,24 @@ export default function SlotGrid() {
 
   const { booking, setBooking, refresh: refreshBooking } = useActiveBooking();
   const [toast, showToast] = useToast();
+
+  // Name, type, photo and floors of this building. Older backends do not have this endpoint.
+  useEffect(() => {
+    let alive = true;
+    API.get(`/buildings/${buildingId}`)
+      .then((res) => alive && setBuilding(res.data))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [buildingId]);
+
+  const buildingName =
+    building?.name || location.state?.name || sessionStorage.getItem(`building:${buildingId}`) || 'Parking';
+  const type = building?.type || 'mall';
+  const meta = metaOf(type);
+  const layout = meta.layout;
+  const floorLabel =
+    building?.floors?.find((f) => f.vehicleType === vehicleType)?.label || FLOOR_LABEL[vehicleType];
+  const vehicleWord = vehicleType === 'car' ? 'cars' : 'bikes';
 
   const fetchSlots = useCallback(async () => {
     try {
@@ -71,7 +91,7 @@ export default function SlotGrid() {
 
   const freeCount = slots.filter((s) => s.status === 'free').length;
 
-  // "Park here": the free bay closest to the entry ramp (lowest bay number)
+  // "Park here": the free bay closest to the entry (lowest bay number)
   const suggested = useMemo(() => {
     if (booking) return null;
     const free = slots.filter((s) => s.status === 'free');
@@ -79,8 +99,7 @@ export default function SlotGrid() {
     return free.reduce((best, s) => (slotNumber(s.slotCode) < slotNumber(best.slotCode) ? s : best));
   }, [slots, booking]);
 
-  const sameBuilding =
-    booking?.buildingId && String(booking.buildingId) === String(buildingId);
+  const sameBuilding = booking?.buildingId && String(booking.buildingId) === String(buildingId);
   const mySlotId = booking?.slotId;
 
   const onSelect = (slot) => {
@@ -145,6 +164,7 @@ export default function SlotGrid() {
 
   const freePercent = slots.length ? Math.round((freeCount / slots.length) * 100) : 0;
   const hasSlots = !loading && !loadError && slots.length > 0;
+  const entryWord = layout === 'open' ? 'entry gate' : 'entry ramp';
 
   return (
     <div className="page">
@@ -157,15 +177,17 @@ export default function SlotGrid() {
       <Toast toast={toast} />
 
       <main className="content">
-        <button type="button" className="link-back" onClick={() => navigate('/buildings')}>
-          Back to all buildings
-        </button>
+        <BackButton onClick={() => navigate('/buildings')}>All buildings</BackButton>
 
         <div className="slot-head">
-          <div>
+          <BuildingPhoto
+            building={{ name: buildingName, type, imageUrl: building?.imageUrl }}
+            className="slot-photo"
+          />
+          <div className="slot-title">
             <h1>{buildingName}</h1>
             <p className="muted">
-              {FLOOR_LABEL[vehicleType]} for {vehicleType === 'car' ? 'cars' : 'bikes'}
+              {meta.label} in {building?.city || 'the city'}. {floorLabel}, {layout === 'basement' ? 'underground' : 'open air'}, {vehicleWord} only.
             </p>
           </div>
           <div className="segmented" role="group" aria-label="Vehicle type">
@@ -230,7 +252,7 @@ export default function SlotGrid() {
             <section className="info-card suggestion" aria-live="polite">
               <div>
                 <h2>Park here: bay {suggested.slotCode}</h2>
-                <p>The free bay closest to the entry ramp. This updates as other cars take bays.</p>
+                <p>The free bay closest to the {entryWord}. This updates as other vehicles take bays.</p>
               </div>
               <div className="banner-actions">
                 <button type="button" className="btn btn-accent" onClick={() => setSlotToBook(suggested)}>
@@ -243,7 +265,7 @@ export default function SlotGrid() {
           {!booking && hasSlots && !suggested && (
             <section className="info-card suggestion suggestion-full" aria-live="polite">
               <div>
-                <h2>This basement is full right now</h2>
+                <h2>This parking is full right now</h2>
                 <p>The page updates by itself when a bay frees up.</p>
               </div>
             </section>
@@ -280,6 +302,7 @@ export default function SlotGrid() {
               mySlotId={mySlotId}
               suggestedId={suggested?.id}
               onSelect={onSelect}
+              layout={layout}
             />
           )}
         </section>
@@ -288,10 +311,11 @@ export default function SlotGrid() {
       {slotToBook && (
         <PaymentModal
           slot={slotToBook}
+          buildingId={buildingId}
           vehicleType={vehicleType}
-          floorLabel={FLOOR_LABEL[vehicleType]}
+          floorLabel={floorLabel}
           buildingName={buildingName}
-          price={PRICE[vehicleType]}
+          fallbackPrice={PRICE[vehicleType]}
           onClose={() => setSlotToBook(null)}
           onPaid={bookSlot}
         />

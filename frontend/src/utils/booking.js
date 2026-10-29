@@ -40,3 +40,18 @@ export function errorText(err, fallback) {
   if (data?.message) return data.message;
   return fallback;
 }
+
+// How each kind of building looks and parks. Malls have basements, the rest are open lots.
+export const TYPE_META = {
+  mall: { label: 'Mall', color: '#3a6ae0', layout: 'basement' },
+  airport: { label: 'Airport', color: '#0e9aa7', layout: 'open' },
+  railway: { label: 'Railway station', color: '#e8801f', layout: 'open' },
+};
+
+export function metaOf(type) {
+  return TYPE_META[type] || TYPE_META.mall;
+}
+
+export function formatRupees(n) {
+  return `\u20B9${Number(n).toLocaleString('en-IN')}`;
+}
