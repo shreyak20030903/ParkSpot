@@ -7,15 +7,18 @@ import BackButton from '../components/BackButton.jsx';
 import BasementMap from '../components/BasementMap.jsx';
 import PaymentModal from '../components/PaymentModal.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import VehicleChip from '../components/VehicleChip.jsx';
+import VehiclePicker from '../components/VehiclePicker.jsx';
 import { BuildingPhoto } from '../components/BuildingArt.jsx';
-import useActiveBooking from '../hooks/useActiveBooking.js';
+import useActiveBookings from '../hooks/useActiveBookings.js';
 import useBuildingSocket from '../hooks/useBuildingSocket.js';
 import useToast from '../hooks/useToast.js';
+import useVehicles from '../hooks/useVehicles.js';
 import {
   FLOOR_LABEL,
   PRICE,
   errorText,
-  formatTime,
+  formatWhen,
   metaOf,
   normalizeBooking,
   slotNumber,
@@ -27,19 +30,26 @@ export default function SlotGrid() {
   const navigate = useNavigate();
 
   const [building, setBuilding] = useState(null);
-  const [vehicleType, setVehicleType] = useState('car');
+  const [browseType, setBrowseType] = useState('car'); // only used while no vehicle is chosen
   const [slots, setSlots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [slotToBook, setSlotToBook] = useState(null);
   const [confirmUnbook, setConfirmUnbook] = useState(false);
   const [unbooking, setUnbooking] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const busy = useRef(false);
 
-  const { booking, setBooking, refresh: refreshBooking } = useActiveBooking();
+  const { vehicles, refresh: refreshVehicles, selected: vehicle, select } = useVehicles();
+  const { bookings, setBookings, refresh: refreshBookings } = useActiveBookings();
   const [toast, showToast] = useToast();
 
-  // Name, type, photo and floors of this building. Older backends do not have this endpoint.
+  // The vehicle being driven decides which bays are shown
+  const vehicleType = vehicle ? vehicle.type : browseType;
+  // Is this vehicle parked somewhere right now (here or in another building)?
+  const booking = vehicle ? bookings.find((b) => b.vehicleId === vehicle.id) || null : null;
+
+  // Name, type, photo and floors of this building
   useEffect(() => {
     let alive = true;
     API.get(`/buildings/${buildingId}`)
@@ -71,8 +81,9 @@ export default function SlotGrid() {
 
   const refreshAll = useCallback(() => {
     fetchSlots();
-    refreshBooking();
-  }, [fetchSlots, refreshBooking]);
+    refreshBookings();
+    refreshVehicles();
+  }, [fetchSlots, refreshBookings, refreshVehicles]);
 
   useEffect(() => {
     setLoading(true);
@@ -93,37 +104,44 @@ export default function SlotGrid() {
 
   // "Park here": the free bay closest to the entry (lowest bay number)
   const suggested = useMemo(() => {
-    if (booking) return null;
+    if (booking || !vehicle) return null;
     const free = slots.filter((s) => s.status === 'free');
     if (free.length === 0) return null;
     return free.reduce((best, s) => (slotNumber(s.slotCode) < slotNumber(best.slotCode) ? s : best));
-  }, [slots, booking]);
+  }, [slots, booking, vehicle]);
 
   const sameBuilding = booking?.buildingId && String(booking.buildingId) === String(buildingId);
-  const mySlotId = booking?.slotId;
+  const mySlotId = sameBuilding ? booking.slotId : null;
 
   const onSelect = (slot) => {
+    if (!vehicle) {
+      setPickerOpen(true);
+      showToast('Choose the vehicle you are driving first.', 'error');
+      return;
+    }
     if (booking && booking.slotId === slot.id) {
       setConfirmUnbook(true);
       return;
     }
     if (booking) {
-      showToast('You already have an active booking. Unbook it to book another bay.', 'error');
+      const where = sameBuilding ? 'here' : `at ${booking.buildingName}`;
+      showToast(`${vehicle.name} is already parked ${where}. Unbook it or choose another vehicle.`, 'error');
       return;
     }
     if (slot.status === 'free') setSlotToBook(slot);
   };
 
   const bookSlot = async (durationMinutes) => {
-    if (busy.current || !slotToBook) return;
+    if (busy.current || !slotToBook || !vehicle) return;
     busy.current = true;
     const slot = slotToBook;
     try {
       const res = await API.post('/bookings', null, {
-        params: { slotId: slot.id, durationMinutes },
+        params: { slotId: slot.id, vehicleId: vehicle.id, durationMinutes },
       });
-      setBooking(normalizeBooking(res.data));
-      showToast(`Bay ${slot.slotCode} is booked.`, 'success');
+      const made = normalizeBooking(res.data);
+      setBookings((prev) => [...prev.filter((b) => b.vehicleId !== vehicle.id), made]);
+      showToast(`${vehicle.name} is booked into bay ${slot.slotCode}.`, 'success');
     } catch (err) {
       showToast(errorText(err, 'Booking failed. Try another bay.'), 'error');
     } finally {
@@ -139,7 +157,7 @@ export default function SlotGrid() {
     setUnbooking(true);
     try {
       await API.patch(`/bookings/${booking.id}/end`);
-      setBooking(null);
+      setBookings((prev) => prev.filter((b) => b.id !== booking.id));
       showToast('Booking ended. The bay is free again.', 'success');
     } catch (err) {
       showToast(errorText(err, 'Could not unbook. Try again.'), 'error');
@@ -158,17 +176,13 @@ export default function SlotGrid() {
     navigate(`/buildings/${booking.buildingId}/slots`, { state: { name: booking.buildingName } });
   };
 
-  let bannerTitle = 'Your active parking';
-  if (sameBuilding) bannerTitle = 'Active parking in this building';
-  else if (booking?.buildingName) bannerTitle = `Active parking at ${booking.buildingName}`;
-
   const freePercent = slots.length ? Math.round((freeCount / slots.length) * 100) : 0;
   const hasSlots = !loading && !loadError && slots.length > 0;
   const entryWord = layout === 'open' ? 'entry gate' : 'entry ramp';
 
   return (
     <div className="page">
-      <Header hasActiveBooking={!!booking} onBlocked={(m) => showToast(m, 'error')}>
+      <Header>
         <span className={live ? 'live-badge live' : 'live-badge'} role="status">
           <span className="live-dot" aria-hidden="true" />
           <span className="live-text">{live ? 'Live' : 'Reconnecting'}</span>
@@ -190,24 +204,28 @@ export default function SlotGrid() {
               {meta.label} in {building?.city || 'the city'}. {floorLabel}, {layout === 'basement' ? 'underground' : 'open air'}, {vehicleWord} only.
             </p>
           </div>
-          <div className="segmented" role="group" aria-label="Vehicle type">
-            <button
-              type="button"
-              aria-pressed={vehicleType === 'car'}
-              className={vehicleType === 'car' ? 'seg active' : 'seg'}
-              onClick={() => setVehicleType('car')}
-            >
-              Car
-            </button>
-            <button
-              type="button"
-              aria-pressed={vehicleType === 'bike'}
-              className={vehicleType === 'bike' ? 'seg active' : 'seg'}
-              onClick={() => setVehicleType('bike')}
-            >
-              Bike
-            </button>
-          </div>
+          {vehicle ? (
+            <VehicleChip vehicle={vehicle} onClick={() => setPickerOpen(true)} />
+          ) : (
+            <div className="segmented" role="group" aria-label="Vehicle type">
+              <button
+                type="button"
+                aria-pressed={browseType === 'car'}
+                className={browseType === 'car' ? 'seg active' : 'seg'}
+                onClick={() => setBrowseType('car')}
+              >
+                Car
+              </button>
+              <button
+                type="button"
+                aria-pressed={browseType === 'bike'}
+                className={browseType === 'bike' ? 'seg active' : 'seg'}
+                onClick={() => setBrowseType('bike')}
+              >
+                Bike
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="info-strip">
@@ -225,14 +243,32 @@ export default function SlotGrid() {
             )}
           </section>
 
-          {booking && (
+          {!vehicle && (
+            <section className="info-card suggestion">
+              <div>
+                <h2>Which vehicle are you driving today?</h2>
+                <p>
+                  {vehicles.length === 0
+                    ? 'Add your car or bike to book a bay.'
+                    : 'Choose one to book a bay. You can still look around without one.'}
+                </p>
+              </div>
+              <div className="banner-actions">
+                <button type="button" className="btn btn-accent" onClick={() => setPickerOpen(true)}>
+                  {vehicles.length === 0 ? 'Add a vehicle' : 'Choose vehicle'}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {vehicle && booking && (
             <section className="info-card booking-banner" aria-live="polite">
               <div>
-                <h2>{bannerTitle}</h2>
+                <h2>{sameBuilding ? 'Active parking in this building' : `${vehicle.name} is parked at ${booking.buildingName}`}</h2>
                 <p>
-                  Bay {booking.slotCode}
+                  {vehicle.name}, {vehicle.number}. Bay {booking.slotCode}
                   {booking.floorLabel ? `, ${booking.floorLabel}` : ''}
-                  {booking.endTime ? `. Booked until ${formatTime(booking.endTime)}.` : '.'}
+                  {booking.endTime ? `. Booked until ${formatWhen(booking.endTime)}.` : '.'}
                 </p>
               </div>
               <div className="banner-actions">
@@ -241,6 +277,9 @@ export default function SlotGrid() {
                     Open that building
                   </button>
                 )}
+                <button type="button" className="btn btn-ghost" onClick={() => setPickerOpen(true)}>
+                  Choose another vehicle
+                </button>
                 <button type="button" className="btn btn-danger" onClick={() => setConfirmUnbook(true)}>
                   Unbook
                 </button>
@@ -248,7 +287,7 @@ export default function SlotGrid() {
             </section>
           )}
 
-          {!booking && suggested && (
+          {vehicle && !booking && suggested && (
             <section className="info-card suggestion" aria-live="polite">
               <div>
                 <h2>Park here: bay {suggested.slotCode}</h2>
@@ -262,7 +301,7 @@ export default function SlotGrid() {
             </section>
           )}
 
-          {!booking && hasSlots && !suggested && (
+          {vehicle && !booking && hasSlots && !suggested && (
             <section className="info-card suggestion suggestion-full" aria-live="polite">
               <div>
                 <h2>This parking is full right now</h2>
@@ -275,7 +314,7 @@ export default function SlotGrid() {
             <h2 className="card-title">Bay colours</h2>
             <ul className="legend" aria-label="Bay colours">
               <li><span className="swatch swatch-free" />Free</li>
-              <li><span className="swatch swatch-booked" />Taken, with the time it frees up</li>
+              <li><span className="swatch swatch-booked" />Taken, with when it frees up</li>
               <li><span className="swatch swatch-mine" />Your bay</li>
               <li><span className="swatch swatch-suggested" />Suggested</li>
             </ul>
@@ -312,12 +351,23 @@ export default function SlotGrid() {
         <PaymentModal
           slot={slotToBook}
           buildingId={buildingId}
+          vehicle={vehicle}
           vehicleType={vehicleType}
           floorLabel={floorLabel}
           buildingName={buildingName}
           fallbackPrice={PRICE[vehicleType]}
           onClose={() => setSlotToBook(null)}
           onPaid={bookSlot}
+        />
+      )}
+
+      {pickerOpen && (
+        <VehiclePicker
+          vehicles={vehicles}
+          selectedId={vehicle?.id}
+          onSelect={select}
+          onAdded={(v) => { refreshVehicles(); select(v.id); }}
+          onClose={() => setPickerOpen(false)}
         />
       )}
 

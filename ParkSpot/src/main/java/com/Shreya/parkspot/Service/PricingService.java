@@ -16,23 +16,23 @@ import java.util.Map;
 @Service
 public class PricingService {
 
-    // hourly: per hour for stays shorter than a day
-    // daily:  per day, and also the cap for stays shorter than a day
-    // monthly: flat price for a 30 day stay (0 means there is no monthly plan)
-    private record Rate(int hourly, int daily, int monthly) {}
+    // shortStay: one flat price for any stay shorter than a day
+    // daily:     price per day for stays of a day or more
+    // monthly:   flat price for a 30 day stay (0 means there is no monthly plan)
+    private record Rate(int shortStay, int daily, int monthly) {}
 
     private static final Map<String, Map<String, Rate>> RATES = Map.of(
             "mall", Map.of(
-                    "car", new Rate(40, 300, 0),
-                    "bike", new Rate(20, 150, 0)),
+                    "car", new Rate(30, 120, 0),
+                    "bike", new Rate(20, 80, 0)),
             "airport", Map.of(
-                    "car", new Rate(30, 250, 3500),
-                    "bike", new Rate(15, 80, 1200)),
+                    "car", new Rate(30, 100, 1800),
+                    "bike", new Rate(20, 50, 900)),
             "railway", Map.of(
-                    "car", new Rate(20, 150, 2500),
-                    "bike", new Rate(10, 50, 800)));
+                    "car", new Rate(30, 60, 1080),
+                    "bike", new Rate(20, 30, 540)));
 
-    // Malls: short stays. Airports and stations: people leave the vehicle and travel.
+    // Malls: short visits. Airports and stations: people leave the vehicle and travel.
     private static final List<Integer> MALL_MINUTES = List.of(60, 120, 180, 240, 360, 480);
     private static final List<Integer> LONG_STAY_MINUTES =
             List.of(360, 720, 1440, 2880, 5760, 10080, 21600, 43200);
@@ -46,8 +46,12 @@ public class PricingService {
         return (t == null || !RATES.containsKey(t)) ? "mall" : t;
     }
 
-    public int hourlyRate(Building b, String vehicleType) {
-        return rate(b, vehicleType).hourly();
+    public int shortStayRate(Building b, String vehicleType) {
+        return rate(b, vehicleType).shortStay();
+    }
+
+    public int dailyRate(Building b, String vehicleType) {
+        return rate(b, vehicleType).daily();
     }
 
     public List<PricingOptionDto> optionsFor(Building b, String vehicleType) {
@@ -81,8 +85,7 @@ public class PricingService {
 
     private int compute(Rate r, int minutes) {
         if (minutes < DAY) {
-            int hours = (int) Math.ceil(minutes / 60.0);
-            return Math.min(hours * r.hourly(), r.daily());
+            return r.shortStay();
         }
         if (minutes == MONTH && r.monthly() > 0) {
             return r.monthly();

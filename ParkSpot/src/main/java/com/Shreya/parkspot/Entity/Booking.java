@@ -20,6 +20,11 @@ public class Booking {
     private String status;        // "active", "completed", "cancelled"
 
     @ManyToOne
+    @JoinColumn(name = "vehicle_id")
+    @JsonIgnore
+    private Vehicle vehicle;
+
+    @ManyToOne
     @JoinColumn(name = "user_id")
     @JsonIgnore
     private User user;

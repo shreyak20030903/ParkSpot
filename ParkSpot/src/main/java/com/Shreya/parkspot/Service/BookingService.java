@@ -3,11 +3,11 @@ package com.Shreya.parkspot.Service;
 import com.Shreya.parkspot.Entity.Booking;
 import com.Shreya.parkspot.Entity.Building;
 import com.Shreya.parkspot.Entity.Slot;
-import com.Shreya.parkspot.Entity.User;
+import com.Shreya.parkspot.Entity.Vehicle;
 import com.Shreya.parkspot.Entity.VehicleType;
 import com.Shreya.parkspot.Repository.BookingRepository;
 import com.Shreya.parkspot.Repository.SlotRepository;
-import com.Shreya.parkspot.Repository.UserRepository;
+import com.Shreya.parkspot.Repository.VehicleRepository;
 import com.Shreya.parkspot.Repository.VehicleTypeRepository;
 import com.Shreya.parkspot.config.SlotBroadcaster;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +20,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -27,52 +28,78 @@ public class BookingService {
 
     @Autowired private SlotRepository slotRepo;
     @Autowired private BookingRepository bookingRepo;
+    @Autowired private VehicleRepository vehicleRepo;
     @Autowired private VehicleTypeRepository vehicleTypeRepo;
-    @Autowired private UserRepository userRepo;
     @Autowired private StringRedisTemplate redisTemplate;
     @Autowired private SlotBroadcaster broadcaster;
     @Autowired private TransactionTemplate txTemplate;
     @Autowired private PricingService pricing;
 
-    public Booking bookSlot(UUID slotId, UUID userId, int durationMinutes) {
-        String lockKey = "lock:slot:" + slotId;
-        Boolean locked = redisTemplate.opsForValue().setIfAbsent(lockKey, "locked", Duration.ofSeconds(5));
-        if (Boolean.FALSE.equals(locked)) {
+    public Booking bookSlot(UUID slotId, UUID userId, UUID vehicleId, int durationMinutes) {
+        // One lock for the bay (two drivers, one bay) and one for the vehicle
+        // (a double click must not park the same vehicle in two bays).
+        String slotLock = "lock:slot:" + slotId;
+        String vehicleLock = "lock:vehicle:" + vehicleId;
+
+        if (!tryLock(slotLock)) {
             throw new RuntimeException("Someone else is booking this bay right now. Try again.");
+        }
+        if (!tryLock(vehicleLock)) {
+            redisTemplate.delete(slotLock);
+            throw new RuntimeException("A booking for this vehicle is already in progress.");
         }
 
         try {
-            // The transaction commits here, inside the lock
-            return txTemplate.execute(status -> createBooking(slotId, userId, durationMinutes));
+            // The transaction commits here, inside the locks
+            return txTemplate.execute(status -> createBooking(slotId, userId, vehicleId, durationMinutes));
         } finally {
-            redisTemplate.delete(lockKey);
+            redisTemplate.delete(slotLock);
+            redisTemplate.delete(vehicleLock);
         }
     }
 
-    private Booking createBooking(UUID slotId, UUID userId, int durationMinutes) {
-        if (!bookingRepo.findByUser_IdAndStatus(userId, "active").isEmpty()) {
-            throw new RuntimeException("You already have an active booking. End it before booking another bay.");
+    private boolean tryLock(String key) {
+        return Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(key, "locked", Duration.ofSeconds(5)));
+    }
+
+    private Booking createBooking(UUID slotId, UUID userId, UUID vehicleId, int durationMinutes) {
+        Vehicle vehicle = vehicleRepo.findById(vehicleId)
+                .orElseThrow(() -> new RuntimeException("Vehicle not found"));
+        if (vehicle.isRemoved() || !vehicle.getUser().getId().equals(userId)) {
+            throw new RuntimeException("This is not your vehicle");
+        }
+
+        // A user can have several vehicles parked, in different cities. Each vehicle only once.
+        Optional<Booking> parked = bookingRepo.findFirstByVehicle_IdAndStatus(vehicleId, "active");
+        if (parked.isPresent()) {
+            String where = parked.get().getSlot().getFloor().getBuilding().getName();
+            throw new RuntimeException(vehicle.getName() + " is already parked at " + where
+                    + ". End that parking first, or choose another vehicle.");
         }
 
         Slot slot = slotRepo.findById(slotId).orElseThrow(() -> new RuntimeException("Bay not found"));
         if (!"free".equals(slot.getStatus())) {
             throw new RuntimeException("Bay already booked");
         }
+        if (!vehicle.getType().equals(slot.getVehicleType())) {
+            throw new RuntimeException("This bay is for " + slot.getVehicleType() + "s, but "
+                    + vehicle.getName() + " is a " + vehicle.getType());
+        }
 
-        // The price comes from the building's type, the bay's vehicle type and the time
-        // asked for. It is never taken from the client, and the time must be an allowed option.
+        // The price comes from the building's type, the bay's vehicle type and the time asked
+        // for. It is never taken from the client, and the time must be an allowed option.
         Building building = slot.getFloor().getBuilding();
         BigDecimal price = pricing.priceFor(building, slot.getVehicleType(), durationMinutes);
 
         VehicleType vehicleType = vehicleTypeRepo.findByName(slot.getVehicleType())
                 .orElseThrow(() -> new RuntimeException("Vehicle type is not configured"));
-        User user = userRepo.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
 
         slot.setStatus("booked");
         slotRepo.save(slot);
 
         Booking booking = new Booking();
-        booking.setUser(user);
+        booking.setUser(vehicle.getUser());
+        booking.setVehicle(vehicle);
         booking.setSlot(slot);
         booking.setVehicleType(vehicleType);
         booking.setStartTime(LocalDateTime.now());
@@ -85,12 +112,9 @@ public class BookingService {
         return saved;
     }
 
-    public Booking getActiveBooking(UUID userId) {
-        List<Booking> active = bookingRepo.findByUser_IdAndStatus(userId, "active");
-        if (active.isEmpty()) {
-            throw new RuntimeException("No active booking found");
-        }
-        return active.get(0);
+    /** Every vehicle of this user that is parked right now. */
+    public List<Booking> getActiveBookings(UUID userId) {
+        return bookingRepo.findByUser_IdAndStatus(userId, "active");
     }
 
     @Transactional

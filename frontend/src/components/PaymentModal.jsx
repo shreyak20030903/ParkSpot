@@ -15,6 +15,7 @@ const FALLBACK_OPTIONS = [
 export default function PaymentModal({
   slot,
   buildingId,
+  vehicle,
   vehicleType,
   floorLabel,
   buildingName,
@@ -108,7 +109,10 @@ export default function PaymentModal({
             <dl className="summary">
               <div><dt>Building</dt><dd>{buildingName}</dd></div>
               <div><dt>Parking</dt><dd>{floorLabel}</dd></div>
-              <div><dt>Vehicle</dt><dd>{vehicleType === 'car' ? 'Car' : 'Bike'}</dd></div>
+              <div>
+                <dt>Vehicle</dt>
+                <dd>{vehicle ? `${vehicle.name}, ${vehicle.number}` : (vehicleType === 'car' ? 'Car' : 'Bike')}</dd>
+              </div>
               <div>
                 <dt><label htmlFor="duration">Parking for</label></dt>
                 <dd>

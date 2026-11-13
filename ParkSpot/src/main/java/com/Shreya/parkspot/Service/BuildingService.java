@@ -70,7 +70,8 @@ public class BuildingService {
         long total = slotRepo.countByFloor_Building_Id(b.getId());
         return new BuildingDto(b.getId(), b.getName(), b.getCity(), PricingService.typeOf(b), b.getImageUrl(),
                 b.getLatitude(), b.getLongitude(), distanceKm, free, total,
-                pricing.hourlyRate(b, "car"), pricing.hourlyRate(b, "bike"));
+                pricing.shortStayRate(b, "car"), pricing.shortStayRate(b, "bike"),
+                pricing.dailyRate(b, "car"), pricing.dailyRate(b, "bike"));
     }
 
     private double haversine(double lat1, double lng1, double lat2, double lng2) {

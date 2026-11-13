@@ -4,8 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import { metaOf } from '../utils/booking';
 
 const TILES = `https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${import.meta.env.VITE_CARTO_KEY}`;
-const ATTRIBUTION =
-  '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com">CARTO</a>';
+const ATTRIBUTION ='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 // A teardrop pin in the building's colour, with its name beside it
 function makeIcon(b) {

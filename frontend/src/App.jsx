@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import Login from './pages/Login.jsx';
 import BuildingList from './pages/BuildingList.jsx';
 import SlotGrid from './pages/SlotGrid.jsx';
+import Vehicles from './pages/Vehicles.jsx';
 import ProtectedRoute from './ProtectedRoute.jsx';
 
 export default function App() {
@@ -21,6 +22,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <SlotGrid />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/vehicles"
+        element={
+          <ProtectedRoute>
+            <Vehicles />
           </ProtectedRoute>
         }
       />

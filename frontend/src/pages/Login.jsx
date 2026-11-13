@@ -68,7 +68,7 @@ export default function Login() {
 
       <section className="auth-panel">
         <div className="auth-card">
-          <div className="brand brand-dark">
+          <div className="brand">
             <span className="brand-mark" aria-hidden="true">P</span>
             <span className="brand-name">ParkSpot</span>
           </div>

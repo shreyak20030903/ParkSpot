@@ -1,4 +1,5 @@
-import { formatTime, slotNumber } from '../utils/booking';
+import { formatShort, formatWhen, slotNumber } from '../utils/booking';
+import { BikeIcon, CarIcon } from './VehicleIcons.jsx';
 
 const PER_ROW = 10;
 const HALF = PER_ROW / 2;
@@ -9,40 +10,12 @@ function chunk(list, size) {
   return out;
 }
 
-// Top-down car and bike, drawn nose-in like a parked vehicle
-function CarIcon() {
-  return (
-    <svg viewBox="0 0 36 52" aria-hidden="true">
-      <rect x="1" y="14" width="4" height="6" rx="1.5" fill="currentColor" />
-      <rect x="31" y="14" width="4" height="6" rx="1.5" fill="currentColor" />
-      <rect x="4" y="2" width="28" height="48" rx="11" fill="currentColor" />
-      <rect x="8" y="12" width="20" height="9" rx="2.5" fill="#fff" opacity="0.85" />
-      <rect x="9" y="22" width="18" height="11" rx="3" fill="#fff" opacity="0.22" />
-      <rect x="8" y="35" width="20" height="7" rx="2.5" fill="#fff" opacity="0.75" />
-      <rect x="7" y="3.5" width="6" height="3" rx="1.5" fill="#fff7c2" />
-      <rect x="23" y="3.5" width="6" height="3" rx="1.5" fill="#fff7c2" />
-    </svg>
-  );
-}
-
-function BikeIcon() {
-  return (
-    <svg viewBox="0 0 20 44" aria-hidden="true">
-      <rect x="8" y="0" width="4" height="11" rx="2" fill="currentColor" opacity="0.55" />
-      <rect x="8" y="33" width="4" height="11" rx="2" fill="currentColor" opacity="0.55" />
-      <rect x="8.5" y="6" width="3" height="32" rx="1.5" fill="currentColor" />
-      <rect x="1" y="9" width="18" height="3" rx="1.5" fill="currentColor" />
-      <ellipse cx="10" cy="27" rx="4.5" ry="5.5" fill="currentColor" />
-    </svg>
-  );
-}
-
 function Bay({ slot, state, vehicleType, onSelect }) {
   let note = '';
   let label = `Bay ${slot.slotCode}, free. Select to book.`;
   if (state === 'booked') {
-    const until = formatTime(slot.occupiedUntil);
-    note = until || 'Taken';
+    const until = formatWhen(slot.occupiedUntil);
+    note = formatShort(slot.occupiedUntil) || 'Taken';
     label = until ? `Bay ${slot.slotCode}, taken until ${until}.` : `Bay ${slot.slotCode}, taken.`;
   } else if (state === 'mine') {
     note = 'Yours';
@@ -60,6 +33,7 @@ function Bay({ slot, state, vehicleType, onSelect }) {
       disabled={state === 'booked'}
       onClick={() => onSelect(slot)}
       aria-label={label}
+      title={state === 'booked' && slot.occupiedUntil ? `Taken until ${formatWhen(slot.occupiedUntil)}` : undefined}
     >
       <span className="slot-code">{slot.slotCode}</span>
       {showVehicle && (
@@ -73,7 +47,9 @@ function Bay({ slot, state, vehicleType, onSelect }) {
 function Row({ slots, vehicleType, stateOf, onSelect, layout }) {
   const cells = [];
   for (let i = 0; i < PER_ROW; i += 1) {
-    if (i === HALF) cells.push(<span key="divider" className={layout === 'open' ? 'lamp' : 'pillar'} aria-hidden="true" />);
+    if (i === HALF) {
+      cells.push(<span key="divider" className={layout === 'open' ? 'lamp' : 'pillar'} aria-hidden="true" />);
+    }
     const slot = slots[i];
     cells.push(
       slot ? (
@@ -92,7 +68,8 @@ function Row({ slots, vehicleType, stateOf, onSelect, layout }) {
   return <div className="bay-row">{cells}</div>;
 }
 
-// Top-down view of one basement: rows of bays facing a driveway, with pillars.
+// Top-down view of one parking: rows of bays facing a driveway.
+// Basements have pillars; open-air lots have lamp posts.
 export default function BasementMap({ slots, vehicleType, mySlotId, suggestedId, onSelect, layout = 'basement' }) {
   const sorted = [...slots].sort((a, b) => slotNumber(a.slotCode) - slotNumber(b.slotCode));
   const aisles = chunk(chunk(sorted, PER_ROW), 2);

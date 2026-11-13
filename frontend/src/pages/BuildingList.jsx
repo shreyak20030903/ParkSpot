@@ -4,10 +4,13 @@ import API from '../api';
 import Header from '../components/Header.jsx';
 import Toast from '../components/Toast.jsx';
 import BuildingMap from '../components/BuildingMap.jsx';
+import VehicleChip from '../components/VehicleChip.jsx';
+import VehiclePicker from '../components/VehiclePicker.jsx';
 import { BuildingPhoto } from '../components/BuildingArt.jsx';
-import useActiveBooking from '../hooks/useActiveBooking.js';
+import useActiveBookings from '../hooks/useActiveBookings.js';
 import useToast from '../hooks/useToast.js';
-import { formatRupees, formatTime, metaOf } from '../utils/booking';
+import useVehicles from '../hooks/useVehicles.js';
+import { formatRupees, formatWhen, metaOf } from '../utils/booking';
 
 const CITIES = ['Indore', 'Pune', 'Mumbai', 'Delhi'];
 
@@ -25,9 +28,11 @@ export default function BuildingList() {
   const [query, setQuery] = useState('');
   const [userPos, setUserPos] = useState(null);
   const [activeId, setActiveId] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const cardRefs = useRef({});
-  const { booking } = useActiveBooking();
-  const [toast, showToast] = useToast();
+  const { bookings } = useActiveBookings();
+  const { vehicles, loaded: vehiclesLoaded, refresh: refreshVehicles, selected: vehicle, select } = useVehicles();
+  const [toast] = useToast();
 
   const loadNearby = useCallback(() => {
     setMode('nearby');
@@ -92,40 +97,73 @@ export default function BuildingList() {
     cardRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
-  const goToBooking = () => {
-    if (!booking?.buildingId) return;
-    if (booking.buildingName) sessionStorage.setItem(`building:${booking.buildingId}`, booking.buildingName);
-    navigate(`/buildings/${booking.buildingId}/slots`, { state: { name: booking.buildingName } });
+  const goToBooking = (b) => {
+    if (!b?.buildingId) return;
+    if (b.buildingName) sessionStorage.setItem(`building:${b.buildingId}`, b.buildingName);
+    navigate(`/buildings/${b.buildingId}/slots`, { state: { name: b.buildingName } });
   };
 
   const isCity = (c) => mode === 'city' && city.toLowerCase() === c.toLowerCase();
 
   return (
     <div className="page">
-      <Header hasActiveBooking={!!booking} onBlocked={(m) => showToast(m, 'error')} />
+      <Header />
       <Toast toast={toast} />
 
       <main className="content content-wide">
-        {booking && (
-          <section className="booking-banner" aria-live="polite">
+        {bookings.map((b) => (
+          <section className="booking-banner" key={b.id} aria-live="polite">
             <div>
               <h2>
-                {booking.buildingName
-                  ? `Active parking at ${booking.buildingName}`
-                  : 'You have an active parking'}
+                {b.vehicleName ? `${b.vehicleName} is parked` : 'A vehicle is parked'}
+                {b.buildingName ? ` at ${b.buildingName}` : ''}
               </h2>
               <p>
-                Bay {booking.slotCode}
-                {booking.floorLabel ? `, ${booking.floorLabel}` : ''}
-                {booking.endTime ? `. Booked until ${formatTime(booking.endTime)}.` : '.'}
+                {b.vehicleNumber ? `${b.vehicleNumber}. ` : ''}Bay {b.slotCode}
+                {b.floorLabel ? `, ${b.floorLabel}` : ''}
+                {b.endTime ? `. Booked until ${formatWhen(b.endTime)}.` : '.'}
               </p>
             </div>
-            {booking.buildingId && (
-              <button type="button" className="btn btn-primary" onClick={goToBooking}>
+            {b.buildingId && (
+              <button type="button" className="btn btn-primary" onClick={() => goToBooking(b)}>
                 Open building
               </button>
             )}
           </section>
+        ))}
+
+        {vehiclesLoaded && vehicles.length === 0 && (
+          <section className="info-card suggestion vehicle-prompt">
+            <div>
+              <h2>Add your car or bike</h2>
+              <p>You need a vehicle to book a bay. It takes a few seconds.</p>
+            </div>
+            <div className="banner-actions">
+              <button type="button" className="btn btn-accent" onClick={() => setPickerOpen(true)}>
+                Add a vehicle
+              </button>
+            </div>
+          </section>
+        )}
+
+        {vehiclesLoaded && vehicles.length > 0 && !vehicle && (
+          <section className="info-card suggestion vehicle-prompt">
+            <div>
+              <h2>Which vehicle are you driving today?</h2>
+              <p>Choose one so we show the right bays when you book.</p>
+            </div>
+            <div className="banner-actions">
+              <button type="button" className="btn btn-accent" onClick={() => setPickerOpen(true)}>
+                Choose vehicle
+              </button>
+            </div>
+          </section>
+        )}
+
+        {vehicle && (
+          <div className="vehicle-strip">
+            <VehicleChip vehicle={vehicle} onClick={() => setPickerOpen(true)} />
+          </div>
         )}
 
         <div className="list-head">
@@ -241,9 +279,11 @@ export default function BuildingList() {
                               </span>
                             )}
                           </span>
-                          {typeof b.carPerHour === 'number' && (
+                          {typeof b.carShortStay === 'number' && (
                             <span className="bcard-price">
-                              Car {formatRupees(b.carPerHour)} an hour, bike {formatRupees(b.bikePerHour)} an hour
+                              {meta.layout === 'basement'
+                                ? `Per visit: car ${formatRupees(b.carShortStay)}, bike ${formatRupees(b.bikeShortStay)}.`
+                                : `Under a day: car ${formatRupees(b.carShortStay)}, bike ${formatRupees(b.bikeShortStay)}. Longer: car ${formatRupees(b.carPerDay)} a day.`}
                             </span>
                           )}
                           {hasCounts && (
@@ -271,6 +311,16 @@ export default function BuildingList() {
           </div>
         </div>
       </main>
+
+      {pickerOpen && (
+        <VehiclePicker
+          vehicles={vehicles}
+          selectedId={vehicle?.id}
+          onSelect={select}
+          onAdded={(v) => { refreshVehicles(); select(v.id); }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }
